@@ -1,0 +1,17 @@
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+python-telegram-bot>=20.8
+httpx>=0.27.0
+beautifulsoup4>=4.12.0
+apscheduler>=3.10.0
+sqlalchemy[asyncio]>=2.0.0
+aiosqlite>=0.20.0
+pydantic>=2.7.0
+pydantic-settings>=2.2.0
+python-dotenv>=1.0.0
+fake-useragent>=1.5.0
+tenacity>=8.3.0
+# Playwright is only imported when USE_PLAYWRIGHT=true at runtime; pin it here
+# so installs are reproducible. The Dockerfile installs the browser binary
+# behind the same flag to avoid a 300 MB image for users who only need httpx.
+playwright>=1.44.0

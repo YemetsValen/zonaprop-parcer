@@ -1,0 +1,22 @@
+services:
+  zonaprop-bot:
+    build:
+      context: .
+      args:
+        # Set USE_PLAYWRIGHT=true on the build command if you want the
+        # Chromium binary baked in:  docker compose build --build-arg USE_PLAYWRIGHT=true
+        USE_PLAYWRIGHT: "false"
+    image: zonaprop-bot:latest
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # SQLite database — persisted across container restarts.
+      - ./data:/app/data
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
