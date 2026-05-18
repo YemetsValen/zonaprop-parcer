@@ -45,6 +45,11 @@ def sample_html(fixtures_dir: Path) -> str:
 
 
 @pytest.fixture
+def sample_ssr_html(fixtures_dir: Path) -> str:
+    return (fixtures_dir / "zonaprop_ssr_sample.html").read_text(encoding="utf-8")
+
+
+@pytest.fixture
 def tmp_sqlite_url(tmp_path: Path) -> str:
     """Per-test SQLite file URL — keeps tests independent."""
     return f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"

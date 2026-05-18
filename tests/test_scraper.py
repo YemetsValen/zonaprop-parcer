@@ -10,9 +10,12 @@ from app.config import Settings
 from app.scraper.zonaprop import (
     ZONAPROP_BASE,
     ZonaPropScraper,
+    _derive_neighborhood,
+    _parse_argentine_price,
     build_search_url,
     extract_next_data,
     parse_listings_from_html,
+    parse_listings_from_ssr_html,
 )
 
 
@@ -140,6 +143,99 @@ async def test_scraper_returns_empty_on_repeated_failures() -> None:
         async with ZonaPropScraper(_make_settings()) as scraper:
             listings = await scraper.fetch_listings()
     assert listings == []
+
+
+# --- SSR HTML parser tests (WhatsApp-UA path) ---------------------------------
+
+
+def test_parse_argentine_price_thousands_dot_is_separator() -> None:
+    # ZonaProp shows "$ 800.000" meaning 800_000 ARS, not 800.0.
+    amount, currency = _parse_argentine_price("$ 800.000")
+    assert amount == 800000.0
+    assert currency == "ARS"
+
+
+def test_parse_argentine_price_usd_prefix() -> None:
+    amount, currency = _parse_argentine_price("USD 1.500")
+    assert amount == 1500.0
+    assert currency == "USD"
+
+
+def test_parse_argentine_price_decimal_comma() -> None:
+    # Comma is decimal in es-AR; "$ 1.250,50" = 1250.5.
+    amount, currency = _parse_argentine_price("$ 1.250,50")
+    assert amount == 1250.5
+    assert currency == "ARS"
+
+
+def test_parse_argentine_price_us_dollar_prefix() -> None:
+    amount, currency = _parse_argentine_price("US$ 2.500")
+    assert amount == 2500.0
+    assert currency == "USD"
+
+
+def test_parse_argentine_price_returns_none_for_junk() -> None:
+    assert _parse_argentine_price("Consultar") == (None, "ARS")
+    assert _parse_argentine_price("") == (None, "ARS")
+
+
+def test_derive_neighborhood_handles_zonaprop_formats() -> None:
+    assert _derive_neighborhood("Guise 1686 Palermo, Capital Federal") == "Palermo"
+    assert (
+        _derive_neighborhood("Cabildo  al 2200 Belgrano, Capital Federal") == "Belgrano"
+    )
+    assert (
+        _derive_neighborhood("Luis María Campos al 300 Las Cañitas, Palermo")
+        == "Las Cañitas"
+    )
+    # No digits at all — use the head.
+    assert _derive_neighborhood("Las Cañitas, Palermo") == "Las Cañitas"
+    assert _derive_neighborhood(None) is None
+    assert _derive_neighborhood("") is None
+
+
+def test_parse_listings_from_ssr_html(sample_ssr_html: str) -> None:
+    listings = parse_listings_from_ssr_html(sample_ssr_html)
+    # 2 valid cards + 1 card with no data-id which must be dropped.
+    assert len(listings) == 2
+
+    first = next(listing for listing in listings if listing.id == "58479269")
+    assert first.price == 800000.0
+    assert first.currency == "ARS"
+    assert first.area_m2 == 50.0
+    assert first.rooms == 3
+    assert first.bathrooms == 1
+    assert first.neighborhood == "Palermo"
+    assert first.address == "Guise 1686 Palermo, Capital Federal"
+    # Tracking query params must be stripped from the URL.
+    assert "?n_src" not in str(first.url)
+    assert str(first.url).endswith("alquiler-foo-58479269.html")
+    # Title derived from description; "$" prefix in price block stripped from
+    # any title-candidate text. The first segment of the description sentence.
+    assert "Hermoso" in first.title
+    assert len(first.images) == 1
+    assert "zonapropcdn" in str(first.images[0])
+    # price_per_m2 rounded.
+    assert first.price_per_m2 == round(800000 / 50, 2)
+
+    second = next(listing for listing in listings if listing.id == "59139567")
+    assert second.price == 1500.0
+    assert second.currency == "USD"
+    assert second.rooms == 1
+    assert second.bathrooms is None
+    assert second.neighborhood == "Belgrano"
+    # Title from description split on "|".
+    assert second.title.startswith("Lindo monoambiente")
+
+
+def test_parse_listings_from_html_falls_back_to_ssr(sample_ssr_html: str) -> None:
+    # parse_listings_from_html should detect the missing __NEXT_DATA__ and
+    # transparently fall back to the SSR parser.
+    listings = parse_listings_from_html(sample_ssr_html)
+    assert len(listings) == 2
+
+
+# --- ZonaPropScraper integration tests ---------------------------------------
 
 
 @pytest.mark.asyncio
