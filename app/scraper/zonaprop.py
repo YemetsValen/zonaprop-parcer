@@ -43,6 +43,15 @@ log = logging.getLogger(__name__)
 
 ZONAPROP_BASE = "https://www.zonaprop.com.ar"
 
+# Cloudflare on www.zonaprop.com.ar runs Managed Challenge against datacenter
+# IPs / generic browser UAs, but explicitly whitelists link-preview crawlers
+# (WhatsApp, etc.) so their server-side rendered metadata is reachable. We use
+# WhatsApp's UA as the primary fetch identity — it gets us a real SSR-rendered
+# HTML page that we then parse with BeautifulSoup. fake-useragent / Chrome UAs
+# stay available as a fallback for environments where the WhatsApp trick has
+# been patched.
+_PRIMARY_UA = "WhatsApp/2.0"
+
 # When the scraper trips a CAPTCHA / WAF page, the JSON blob is missing and
 # the body is small + has these strings. We use this to decide whether to
 # fall back to Playwright.
@@ -52,6 +61,17 @@ _NEXT_DATA_RE = re.compile(
     r'<script id="__NEXT_DATA__"[^>]*>(?P<json>.+?)</script>',
     re.DOTALL,
 )
+
+# Regex helpers for the SSR (server-rendered) HTML format. The numbers come
+# from spans like "50 m² tot.", "3 amb.", "2 dorm.", "1 baño" — we keep them
+# lenient (allow nbsp / leading punctuation) so a small layout tweak doesn't
+# silently drop data.
+_AREA_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*m²", re.IGNORECASE)
+_ROOMS_RE = re.compile(r"(\d+)\s*amb\.", re.IGNORECASE)
+_BEDROOMS_RE = re.compile(r"(\d+)\s*dorm\.", re.IGNORECASE)
+_BATHS_RE = re.compile(r"(\d+)\s*baño", re.IGNORECASE)
+_POSTING_ID_FROM_URL = re.compile(r"-(\d+)\.html(?:[?#]|$)")
+_PRICE_TEXT_RE = re.compile(r"(USD|US\$|\$)\s*([\d.,]+)", re.IGNORECASE)
 
 
 # --- helpers -----------------------------------------------------------------
@@ -163,6 +183,295 @@ def _looks_blocked(html: str) -> bool:
         return True
     sample = html[:4096]
     return any(hint.lower() in sample.lower() for hint in _BLOCK_HINTS)
+
+
+# --- SSR HTML parser ---------------------------------------------------------
+
+
+def _collect_ldjson_by_url(soup: BeautifulSoup) -> dict[str, dict[str, Any]]:
+    """Walk all ld+json blocks and index RealEstateListing entries by URL.
+
+    ZonaProp emits one ``<script type="application/ld+json">`` per listing
+    on a results page, plus a couple of "Organization" boilerplate blocks.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for tag in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = tag.string or tag.get_text() or ""
+        if not raw.strip():
+            continue
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        if data.get("@type") != "RealEstateListing":
+            continue
+        url = data.get("url")
+        if isinstance(url, str):
+            out[url] = data
+    return out
+
+
+def _ldjson_for_url(
+    ld_index: dict[str, dict[str, Any]], url: str
+) -> dict[str, Any] | None:
+    if url in ld_index:
+        return ld_index[url]
+    # Match by postingId suffix — listing URLs sometimes carry query strings.
+    match = _POSTING_ID_FROM_URL.search(url)
+    if not match:
+        return None
+    suffix = f"-{match.group(1)}.html"
+    for key, value in ld_index.items():
+        if key.endswith(suffix):
+            return value
+    return None
+
+
+def _first_image_url(card: Any) -> str | None:
+    for img in card.find_all("img"):
+        src = img.get("src") or img.get("data-src") or img.get("data-flickity-lazyload")
+        if not src:
+            continue
+        if src.startswith("//"):
+            src = "https:" + src
+        if not src.startswith("http"):
+            continue
+        if "zonapropcdn" in src or "naventcdn" in src:
+            return src
+    return None
+
+
+def _ldjson_main_entity(entry: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the ``mainEntity`` listing dict if present.
+
+    On listing pages the structure is ``mainEntity: [Apartment, ...]`` and
+    on search pages it's ``mainEntity: [{type: RealEstateListing, ...}]``.
+    """
+    entities = entry.get("mainEntity")
+    if isinstance(entities, list) and entities:
+        first = entities[0]
+        if isinstance(first, dict):
+            return first
+    if isinstance(entities, dict):
+        return entities
+    return None
+
+
+def _ldjson_address(entry: dict[str, Any]) -> str | None:
+    me = _ldjson_main_entity(entry) or {}
+    addr = me.get("address")
+    if isinstance(addr, dict):
+        return addr.get("name") or addr.get("streetAddress") or None
+    if isinstance(addr, str):
+        return addr
+    return None
+
+
+def _parse_argentine_price(text: str) -> tuple[float | None, str]:
+    """Parse a ZonaProp price string.
+
+    Returns ``(amount, currency)``. ZonaProp prefixes ``USD`` or ``US$`` for
+    dollar prices and plain ``$`` for ARS, and uses the Argentine numeric
+    format (``.`` as thousands separator, ``,`` as decimal). So ``$ 800.000``
+    means *800 000*, not *800.0*. We treat a lone ``.`` group as a thousands
+    separator and only honour ``,`` as a decimal point.
+    """
+    if not text:
+        return None, "ARS"
+    m = _PRICE_TEXT_RE.search(text)
+    if not m:
+        return None, "ARS"
+    prefix, num = m.group(1), m.group(2)
+    currency = "USD" if prefix.upper() in ("USD", "US$") else "ARS"
+    cleaned = (
+        # Thousands sep is ``.``, decimal is ``,``.
+        num.replace(".", "").replace(",", ".")
+        if "," in num
+        # All dots are thousands separators — ZonaProp never shows fractional
+        # prices without a comma.
+        else num.replace(".", "")
+    )
+    try:
+        return float(cleaned), currency
+    except ValueError:
+        return None, currency
+
+
+def _derive_title(description: str | None, features: str | None) -> str:
+    """Build a short, human-friendly title.
+
+    ZonaProp cards have no explicit title, so we synthesise one from the
+    first segment of the description (split on ``|``, ``.``, newline) and
+    fall back to the feature line if the description is empty.
+    """
+    if description:
+        head = re.split(r"[|\n\r]|(?<=\D)\.(?:\s|$)", description, maxsplit=1)[0]
+        head = head.strip()
+        if 5 < len(head) <= 140:
+            return head
+        if head:
+            return head[:140].rsplit(" ", 1)[0]
+    if features:
+        return features.strip()
+    return "ZonaProp listing"
+
+
+def _derive_neighborhood(address: str | None) -> str | None:
+    """Pick the neighborhood out of a ZonaProp address line.
+
+    Formats observed:
+        "Guise 1686 Palermo, Capital Federal"          -> Palermo
+        "Cabildo  al 2200 Belgrano, Capital Federal"   -> Belgrano
+        "Luis María Campos al 300 Las Cañitas, Palermo" -> Las Cañitas
+        "Av. Libertador 4400, Las Cañitas, Palermo"    -> Las Cañitas
+    The heuristic: the part before the first ``,`` is ``<street> <number?>
+    <neighborhood>``. We strip the street name + house number prefix, leaving
+    the neighborhood. "al" is ZonaProp's filler for an approximate house
+    number and we drop it.
+    """
+    if not address:
+        return None
+    head = address.split(",", 1)[0].strip()
+    if not head:
+        return None
+    tokens = head.split()
+    # Find the last digit-only token — everything after it is the neighborhood.
+    last_num_idx = -1
+    for i, t in enumerate(tokens):
+        if t.replace(".", "").isdigit():
+            last_num_idx = i
+    # If we found a digit-only token, everything after it is the neighborhood;
+    # otherwise (no digit at all, e.g. "Las Cañitas, Palermo") use the whole head.
+    nb_tokens = (
+        tokens[last_num_idx + 1 :]
+        if 0 <= last_num_idx < len(tokens) - 1
+        else tokens
+    )
+    # Drop trailing/leading "al" filler.
+    nb_tokens = [t for t in nb_tokens if t.lower() != "al"]
+    return " ".join(nb_tokens) or None
+
+
+def _parse_card_to_listing(
+    card: Any,
+    *,
+    ld_index: dict[str, dict[str, Any]],
+    now: datetime,
+) -> Listing | None:
+    """Parse one ``.postingCardLayout-...`` div into a typed Listing."""
+    pid = (card.get("data-id") or "").strip()
+    if not pid:
+        return None
+
+    # URL: first link into /propiedades/.
+    href: str | None = None
+    for a in card.find_all("a", href=True):
+        if "/propiedades/" in a["href"]:
+            href = a["href"]
+            break
+    if not href:
+        return None
+    if href.startswith("/"):
+        href = ZONAPROP_BASE + href
+    # Strip tracking query params — keeps the DB tidy and avoids dedup races.
+    href = href.split("?", 1)[0]
+
+    # --- price + currency ---
+    # Per-card ARS/USD prices live in the visible price block. The ld+json
+    # ``offers`` field is *aggregate* across the whole results page (highPrice/
+    # lowPrice describe the page, not this listing) so we never trust it for
+    # the amount.
+    price: float | None = None
+    currency = "ARS"
+    price_el = card.select_one(
+        '[data-qa="POSTING_CARD_PRICE"], .postingPrices-module__price'
+    )
+    if price_el is not None:
+        price, currency = _parse_argentine_price(price_el.get_text(" ", strip=True))
+
+    # --- features (m² / rooms / bathrooms) ---
+    feat_text_parts = [
+        span.get_text(" ", strip=True)
+        for span in card.select(
+            ".postingMainFeatures-module__posting-main-features-span"
+        )
+    ]
+    feat_text = " ".join(feat_text_parts)
+    area_m2 = _as_float(m.group(1)) if (m := _AREA_RE.search(feat_text)) else None
+    rooms = _as_int(m.group(1)) if (m := _ROOMS_RE.search(feat_text)) else None
+    bathrooms = _as_int(m.group(1)) if (m := _BATHS_RE.search(feat_text)) else None
+
+    price_per_m2: float | None = None
+    if price and area_m2 and area_m2 > 0:
+        price_per_m2 = round(price / area_m2, 2)
+
+    # --- address / neighborhood ---
+    address: str | None = None
+    block = card.select_one(".postingLocations-module__location-block")
+    if block is not None:
+        address = block.get_text(" ", strip=True) or None
+    if not address:
+        ld = _ldjson_for_url(ld_index, href)
+        if ld is not None:
+            address = _ldjson_address(ld)
+    neighborhood = _derive_neighborhood(address)
+
+    # --- description / title / images ---
+    description: str | None = None
+    desc_el = card.select_one('[data-qa="POSTING_CARD_DESCRIPTION"]')
+    if desc_el is not None:
+        text = desc_el.get_text(" ", strip=True)
+        description = (text or "").strip()[:500] or None
+
+    title = _derive_title(description, feat_text)
+
+    image = _first_image_url(card)
+    images: list[str] = [image] if image else []
+
+    try:
+        return Listing(
+            id=pid,
+            url=href,
+            title=title,
+            price=price,
+            currency=currency or "ARS",
+            price_per_m2=price_per_m2,
+            area_m2=area_m2,
+            rooms=rooms,
+            bathrooms=bathrooms,
+            address=address,
+            neighborhood=neighborhood,
+            description=description,
+            images=images,  # type: ignore[arg-type]
+            published_at=None,
+            scraped_at=now,
+        )
+    except Exception as exc:  # noqa: BLE001 - one bad posting must not abort the run
+        log.warning("dropping malformed posting %s: %s", pid, exc)
+        return None
+
+
+def parse_listings_from_ssr_html(
+    html: str, now: datetime | None = None
+) -> list[Listing]:
+    """Extract listings from ZonaProp's server-rendered HTML.
+
+    This is the path taken when we fetch with a link-preview UA
+    (``WhatsApp/2.0``) and Cloudflare lets the request through with full SSR
+    content but **no** ``__NEXT_DATA__`` script.
+    """
+    now = now or datetime.now(tz=UTC)
+    soup = BeautifulSoup(html, "html.parser")
+    ld_index = _collect_ldjson_by_url(soup)
+    cards = soup.select(".postingCardLayout-module__posting-card-layout[data-id]")
+    out: list[Listing] = []
+    for card in cards:
+        listing = _parse_card_to_listing(card, ld_index=ld_index, now=now)
+        if listing is not None:
+            out.append(listing)
+    return out
 
 
 def _iter_postings(next_data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -293,17 +602,27 @@ def _map_raw_to_listing(raw: dict[str, Any], now: datetime) -> Listing | None:
 
 
 def parse_listings_from_html(html: str, now: datetime | None = None) -> list[Listing]:
-    """Public: extract every listing we can recognise out of one HTML page."""
+    """Public: extract every listing we can recognise out of one HTML page.
+
+    Strategy:
+
+    1. Try the legacy ``__NEXT_DATA__`` JSON path (kept for fixtures and any
+       page where ZonaProp still emits it).
+    2. Fall back to the SSR HTML parser. The link-preview UA we use most of
+       the time returns the server-rendered page without ``__NEXT_DATA__``,
+       so this is the hot path in production.
+    """
     now = now or datetime.now(tz=UTC)
     data = extract_next_data(html)
-    if data is None:
-        return []
-    out: list[Listing] = []
-    for raw in _iter_postings(data):
-        listing = _map_raw_to_listing(raw, now=now)
-        if listing is not None:
-            out.append(listing)
-    return out
+    if data is not None:
+        out: list[Listing] = []
+        for raw in _iter_postings(data):
+            listing = _map_raw_to_listing(raw, now=now)
+            if listing is not None:
+                out.append(listing)
+        if out:
+            return out
+    return parse_listings_from_ssr_html(html, now=now)
 
 
 # --- ZonaPropScraper ---------------------------------------------------------
@@ -319,14 +638,21 @@ class ZonaPropScraper:
         *,
         http_client: httpx.AsyncClient | None = None,
         ua: UserAgent | None = None,
+        rotate_ua: bool = False,
     ) -> None:
         self._settings = settings or get_settings()
         self._client_override = http_client
         self._client: httpx.AsyncClient | None = http_client
-        try:
-            self._ua = ua or UserAgent()
-        except Exception:  # noqa: BLE001 - offline / cached-data failures
-            self._ua = None
+        # ``rotate_ua=True`` opts back in to fake-useragent's Chrome rotation,
+        # which can be useful when running this scraper against domains that
+        # don't whitelist WhatsApp. The default is the stable WhatsApp UA.
+        if rotate_ua:
+            try:
+                self._ua = ua or UserAgent()
+            except Exception:  # noqa: BLE001 - offline / cached-data failures
+                self._ua = None
+        else:
+            self._ua = ua
 
     async def __aenter__(self) -> ZonaPropScraper:
         return self
@@ -342,15 +668,21 @@ class ZonaPropScraper:
     # --- HTTP --------------------------------------------------------------
 
     def _user_agent(self) -> str:
+        """Pick a UA per request.
+
+        We **default to the WhatsApp link-preview UA** because that's the
+        identity Cloudflare lets through on www.zonaprop.com.ar. Pages served
+        to WhatsApp are full server-side-rendered HTML — perfect for our
+        SSR parser. If you really need a browser-style UA (e.g. for a future
+        domain that blocks WhatsApp), set ``USE_PLAYWRIGHT=true`` or override
+        the scraper's ``ua`` constructor argument.
+        """
         if self._ua is not None:
             try:
                 return str(self._ua.random)
             except Exception:  # noqa: BLE001
                 pass
-        return (
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-        )
+        return _PRIMARY_UA
 
     def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None:

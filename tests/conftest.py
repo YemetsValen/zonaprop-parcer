@@ -17,9 +17,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 # Sensible defaults BEFORE importing app modules so Settings() parses cleanly.
+# API_KEY is force-set (not setdefault) because tests hardcode "test-api-key" as
+# the bearer token; if CI / the local shell happens to export a different value
+# the auth-protected endpoints return 403 and the test_api suite breaks.
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test:token")
 os.environ.setdefault("TELEGRAM_CHAT_ID", "111,222")
-os.environ.setdefault("API_KEY", "test-api-key")
+os.environ["API_KEY"] = "test-api-key"
 os.environ.setdefault("OPERATION_TYPE", "alquiler")
 os.environ.setdefault("PROPERTY_TYPES", "departamentos,ph")
 os.environ.setdefault("NEIGHBORHOODS", "palermo,belgrano")
@@ -42,6 +45,11 @@ def fixtures_dir() -> Path:
 @pytest.fixture
 def sample_html(fixtures_dir: Path) -> str:
     return (fixtures_dir / "zonaprop_sample.html").read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def sample_ssr_html(fixtures_dir: Path) -> str:
+    return (fixtures_dir / "zonaprop_ssr_sample.html").read_text(encoding="utf-8")
 
 
 @pytest.fixture
