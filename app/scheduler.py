@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import select
 
@@ -82,6 +83,13 @@ def _passes_filters(listing: Listing, settings: Settings) -> bool:
     """ZonaProp's URL filters do most of the work, but the response often
     contains nearby / similar postings — re-check key constraints here so
     only matches reach Telegram."""
+    # Price comparison only makes sense within the same currency — mixing
+    # ARS / USD would silently let through a 750 000 ARS listing under a
+    # 90 000 USD ceiling (or block a 90 000 USD listing under an 800 000 ARS
+    # ceiling). When the listing currency differs from the configured one we
+    # drop the listing rather than guess at an FX rate.
+    if listing.price is not None and listing.currency != settings.currency.value:
+        return False
     if settings.price_max and listing.price and listing.price > settings.price_max:
         return False
     if settings.price_min and listing.price and listing.price < settings.price_min:
@@ -92,6 +100,12 @@ def _passes_filters(listing: Listing, settings: Settings) -> bool:
         return False
     if settings.rooms_max and listing.rooms and listing.rooms > settings.rooms_max:
         return False
+    # When the user configured a city-level location slug (e.g. ``capital-federal``)
+    # we trust ZonaProp's URL-side filter and don't re-check the barrio locally:
+    # individual listings carry the barrio (Palermo, Belgrano, …), not the city
+    # slug, so a naive ``in`` check would reject everything.
+    if settings.has_city_level_location:
+        return True
     return not (
         settings.neighborhoods
         and listing.neighborhood
@@ -203,6 +217,19 @@ async def watchdog_tick(notifier: TelegramNotifier | None = None) -> None:
 # --- lifecycle --------------------------------------------------------------
 
 
+def _check_trigger(settings: Settings) -> IntervalTrigger | CronTrigger:
+    """Pick a trigger: daily cron in ``schedule_timezone`` if
+    ``daily_check_time`` is set, otherwise the interval trigger."""
+    if settings.daily_check_time:
+        hh, mm = settings.daily_check_time.split(":", 1)
+        return CronTrigger(
+            hour=int(hh),
+            minute=int(mm),
+            timezone=settings.schedule_timezone,
+        )
+    return IntervalTrigger(minutes=settings.check_interval_minutes)
+
+
 def build_scheduler() -> AsyncIOScheduler:
     """Construct (but do not start) the scheduler with all jobs registered."""
     global _scheduler
@@ -210,7 +237,7 @@ def build_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(
         check_new_listings,
-        trigger=IntervalTrigger(minutes=settings.check_interval_minutes),
+        trigger=_check_trigger(settings),
         id="zonaprop_check",
         replace_existing=True,
         max_instances=1,

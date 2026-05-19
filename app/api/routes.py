@@ -104,6 +104,11 @@ class FiltersView(BaseModel):
     rooms_min: int
     rooms_max: int
     area_min: int
+    published_within_days: int
+    # Either ``daily_check_time`` (e.g. ``"07:00"`` in ``schedule_timezone``)
+    # or ``check_interval_minutes`` is in effect at any one time.
+    daily_check_time: str
+    schedule_timezone: str
     check_interval_minutes: int
     search_url: str
 
@@ -125,6 +130,7 @@ class FiltersPatch(BaseModel):
     rooms_min: int | None = Field(default=None, ge=0)
     rooms_max: int | None = Field(default=None, ge=0)
     area_min: int | None = Field(default=None, ge=0)
+    published_within_days: int | None = Field(default=None, ge=0)
 
 
 class CheckRunResponse(BaseModel):
@@ -150,6 +156,9 @@ def _filters_view(settings: Settings) -> FiltersView:
         rooms_min=settings.rooms_min,
         rooms_max=settings.rooms_max,
         area_min=settings.area_min,
+        published_within_days=settings.published_within_days,
+        daily_check_time=settings.daily_check_time,
+        schedule_timezone=settings.schedule_timezone,
         check_interval_minutes=settings.check_interval_minutes,
         search_url=build_search_url(settings),
     )
@@ -186,10 +195,7 @@ async def list_listings(
     async with get_session() as session:
         total = await session.scalar(select(func.count(SeenListing.id))) or 0
         rows = await session.execute(
-            select(SeenListing)
-            .order_by(SeenListing.scraped_at.desc())
-            .limit(limit)
-            .offset(offset)
+            select(SeenListing).order_by(SeenListing.scraped_at.desc()).limit(limit).offset(offset)
         )
         items = [ListingOut.model_validate(row) for row in rows.scalars().all()]
     return ListingsPage(items=items, total=int(total), limit=limit, offset=offset)
@@ -264,9 +270,7 @@ async def export_csv() -> Response:
         ]
     )
     async with get_session() as session:
-        rows = await session.execute(
-            select(SeenListing).order_by(SeenListing.scraped_at.desc())
-        )
+        rows = await session.execute(select(SeenListing).order_by(SeenListing.scraped_at.desc()))
         for row in rows.scalars().all():
             writer.writerow(
                 [

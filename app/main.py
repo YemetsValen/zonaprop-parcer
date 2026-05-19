@@ -37,9 +37,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     _configure_logging()
     log = logging.getLogger("app.main")
     settings = get_settings()
+    schedule_desc = (
+        f"cron daily @ {settings.daily_check_time} {settings.schedule_timezone}"
+        if settings.daily_check_time
+        else f"interval={settings.check_interval_minutes}m"
+    )
     log.info(
-        "starting ZonaProp bot — interval=%dm, chats=%d, playwright=%s",
-        settings.check_interval_minutes,
+        "starting ZonaProp bot — %s, chats=%d, playwright=%s",
+        schedule_desc,
         len(settings.chat_ids),
         settings.use_playwright,
     )

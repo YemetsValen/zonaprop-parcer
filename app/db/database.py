@@ -57,9 +57,7 @@ def get_engine() -> AsyncEngine:
         url = get_settings().database_url
         _ensure_sqlite_directory(url)
         _engine = _build_engine(url)
-        _session_factory = async_sessionmaker(
-            _engine, expire_on_commit=False, class_=AsyncSession
-        )
+        _session_factory = async_sessionmaker(_engine, expire_on_commit=False, class_=AsyncSession)
     return _engine
 
 

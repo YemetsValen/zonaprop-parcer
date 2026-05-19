@@ -119,9 +119,7 @@ class TelegramNotifier:
                 await asyncio.sleep(2 * attempts)
 
 
-async def send_listings(
-    notifier: TelegramNotifier, listings: Iterable[Listing]
-) -> int:
+async def send_listings(notifier: TelegramNotifier, listings: Iterable[Listing]) -> int:
     """Convenience: send a batch, return how many were dispatched at least
     once (i.e. delivered to ≥ 1 chat)."""
     sent = 0
