@@ -17,24 +17,30 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 # Sensible defaults BEFORE importing app modules so Settings() parses cleanly.
-# API_KEY is force-set (not setdefault) because tests hardcode "test-api-key" as
-# the bearer token; if CI / the local shell happens to export a different value
+# These are FORCE-SET (not setdefault) so a local ``.env`` configured for a
+# real run (e.g. venta + USD + capital-federal) can't leak into the test
+# suite and trigger validator errors when individual tests only override a
+# few fields. API_KEY is also force-set because tests hardcode "test-api-key"
+# as the bearer token; if CI / the local shell exports a different value
 # the auth-protected endpoints return 403 and the test_api suite breaks.
-os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test:token")
-os.environ.setdefault("TELEGRAM_CHAT_ID", "111,222")
+os.environ["TELEGRAM_BOT_TOKEN"] = "test:token"
+os.environ["TELEGRAM_CHAT_ID"] = "111,222"
 os.environ["API_KEY"] = "test-api-key"
-os.environ.setdefault("OPERATION_TYPE", "alquiler")
-os.environ.setdefault("PROPERTY_TYPES", "departamentos,ph")
-os.environ.setdefault("NEIGHBORHOODS", "palermo,belgrano")
-os.environ.setdefault("PRICE_MIN", "300000")
-os.environ.setdefault("PRICE_MAX", "800000")
-os.environ.setdefault("CURRENCY", "ARS")
-os.environ.setdefault("ROOMS_MIN", "2")
-os.environ.setdefault("ROOMS_MAX", "3")
-os.environ.setdefault("AREA_MIN", "45")
-os.environ.setdefault("CHECK_INTERVAL_MINUTES", "15")
-os.environ.setdefault("WATCHDOG_TIMEOUT_MINUTES", "30")
-os.environ.setdefault("USE_PLAYWRIGHT", "false")
+os.environ["OPERATION_TYPE"] = "alquiler"
+os.environ["PROPERTY_TYPES"] = "departamentos,ph"
+os.environ["NEIGHBORHOODS"] = "palermo,belgrano"
+os.environ["PRICE_MIN"] = "300000"
+os.environ["PRICE_MAX"] = "800000"
+os.environ["CURRENCY"] = "ARS"
+os.environ["ROOMS_MIN"] = "2"
+os.environ["ROOMS_MAX"] = "3"
+os.environ["AREA_MIN"] = "45"
+os.environ["PUBLISHED_WITHIN_DAYS"] = "0"
+os.environ["CHECK_INTERVAL_MINUTES"] = "15"
+os.environ["DAILY_CHECK_TIME"] = ""
+os.environ["SCHEDULE_TIMEZONE"] = "America/Argentina/Buenos_Aires"
+os.environ["WATCHDOG_TIMEOUT_MINUTES"] = "30"
+os.environ["USE_PLAYWRIGHT"] = "false"
 
 
 @pytest.fixture

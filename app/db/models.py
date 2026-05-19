@@ -29,12 +29,8 @@ class SeenListing(Base):
     price: Mapped[float | None] = mapped_column(default=None)
     currency: Mapped[str | None] = mapped_column(String(8), default=None)
     neighborhood: Mapped[str | None] = mapped_column(String(128), default=None)
-    scraped_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-    notified_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), default=None
-    )
+    scraped_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
 
 # Most listings-table queries are "find by listing_id" or "order by scraped_at desc";

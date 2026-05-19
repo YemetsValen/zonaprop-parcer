@@ -53,8 +53,16 @@ def test_format_listing_includes_required_fields() -> None:
 
 def test_format_listing_handles_missing_data() -> None:
     text = format_listing(
-        _make_listing(price=None, price_per_m2=None, area_m2=None, rooms=None, bathrooms=None,
-                     neighborhood=None, address=None, published_at=None)
+        _make_listing(
+            price=None,
+            price_per_m2=None,
+            area_m2=None,
+            rooms=None,
+            bathrooms=None,
+            neighborhood=None,
+            address=None,
+            published_at=None,
+        )
     )
     # All "—" placeholders shouldn't break HTML — just visually empty fields.
     assert "—" in text

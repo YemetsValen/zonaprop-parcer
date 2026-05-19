@@ -74,6 +74,55 @@ def test_build_search_url_two_property_types_joined() -> None:
     assert "departamentos-y-ph" in build_search_url(s)
 
 
+def test_build_search_url_venta_capital_federal_24h() -> None:
+    """Venta + capital-federal + 24h: real-world config for the daily digest."""
+    s = _make_settings(
+        operation_type="venta",
+        property_types="departamentos",
+        neighborhoods="capital-federal",
+        currency="USD",
+        price_min=0,
+        price_max=90000,
+        rooms_min=0,
+        rooms_max=0,
+        area_min=0,
+        published_within_days=1,
+    )
+    url = build_search_url(s)
+    assert "venta" in url
+    assert "capital-federal" in url
+    assert "publicado-hace-menos-de-1-dia" in url
+    # Price slug is intentionally omitted: ZonaProp redirects the
+    # ``capital-federal + price`` combo to the global page, so we keep the
+    # URL location-scoped and re-check price locally.
+    assert "dolares" not in url
+    assert "90000" not in url
+
+
+def test_build_search_url_price_only_max_uses_zero_prefix() -> None:
+    """Only ``price_max`` set (no city) -> ``0-<max>-{money}``."""
+    s = _make_settings(
+        neighborhoods="palermo",
+        currency="USD",
+        price_min=0,
+        price_max=150000,
+    )
+    url = build_search_url(s)
+    assert "0-150000-dolares" in url
+
+
+def test_build_search_url_published_within_days_plural() -> None:
+    s = _make_settings(neighborhoods="palermo", published_within_days=7)
+    assert "publicado-hace-menos-de-7-dias" in build_search_url(s)
+
+
+def test_build_search_url_published_within_days_singular() -> None:
+    s = _make_settings(neighborhoods="palermo", published_within_days=1)
+    assert "publicado-hace-menos-de-1-dia" in build_search_url(s)
+    # And NOT the plural form.
+    assert "publicado-hace-menos-de-1-dias" not in build_search_url(s)
+
+
 def test_extract_next_data_handles_minified_html(sample_html: str) -> None:
     data = extract_next_data(sample_html)
     assert data is not None
@@ -181,13 +230,8 @@ def test_parse_argentine_price_returns_none_for_junk() -> None:
 
 def test_derive_neighborhood_handles_zonaprop_formats() -> None:
     assert _derive_neighborhood("Guise 1686 Palermo, Capital Federal") == "Palermo"
-    assert (
-        _derive_neighborhood("Cabildo  al 2200 Belgrano, Capital Federal") == "Belgrano"
-    )
-    assert (
-        _derive_neighborhood("Luis María Campos al 300 Las Cañitas, Palermo")
-        == "Las Cañitas"
-    )
+    assert _derive_neighborhood("Cabildo  al 2200 Belgrano, Capital Federal") == "Belgrano"
+    assert _derive_neighborhood("Luis María Campos al 300 Las Cañitas, Palermo") == "Las Cañitas"
     # No digits at all — use the head.
     assert _derive_neighborhood("Las Cañitas, Palermo") == "Las Cañitas"
     assert _derive_neighborhood(None) is None

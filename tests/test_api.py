@@ -61,9 +61,7 @@ async def test_check_requires_bearer_token(fresh_db) -> None:
 async def test_check_rejects_wrong_token(fresh_db) -> None:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/api/check", headers={"Authorization": "Bearer wrong"}
-        )
+        resp = await client.post("/api/check", headers={"Authorization": "Bearer wrong"})
     assert resp.status_code == 403
 
 
@@ -81,9 +79,7 @@ async def test_check_runs_with_valid_token(fresh_db) -> None:
     with patch("app.api.routes.check_new_listings", fake):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post(
-                "/api/check", headers={"Authorization": "Bearer test-api-key"}
-            )
+            resp = await client.post("/api/check", headers={"Authorization": "Bearer test-api-key"})
     assert resp.status_code == 200
     fake.assert_awaited_once()
 

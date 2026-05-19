@@ -147,9 +147,26 @@ def build_search_url(settings: Settings) -> str:
     if settings.area_min:
         parts.append(f"mas-{settings.area_min}-m2")
 
-    if settings.price_min and settings.price_max:
-        money = "pesos" if settings.currency == Currency.ARS else "dolares"
-        parts.append(f"{settings.price_min}-{settings.price_max}-{money}")
+    # ZonaProp silently drops the city/region slug from the URL when the price
+    # range is restrictive enough (e.g. ``capital-federal`` + ``≤ 90 000 USD``
+    # redirects to the global ``departamentos-venta-0-90000-dolar`` page). To
+    # avoid losing the location filter we keep the URL location-scoped and
+    # enforce the price range in ``app.scheduler._passes_filters`` instead.
+    if not settings.has_city_level_location:
+        if settings.price_min and settings.price_max:
+            money = "pesos" if settings.currency == Currency.ARS else "dolares"
+            parts.append(f"{settings.price_min}-{settings.price_max}-{money}")
+        elif settings.price_max:
+            # ``0-{max}-{money}`` is ZonaProp's "up to X" form. We don't use
+            # ``hasta-`` because ZP silently rewrites that to the full results page.
+            money = "pesos" if settings.currency == Currency.ARS else "dolares"
+            parts.append(f"0-{settings.price_max}-{money}")
+
+    if settings.published_within_days:
+        n = settings.published_within_days
+        # Singular for 1, plural for 2+ — ZonaProp serves both forms.
+        suffix = "dia" if n == 1 else "dias"
+        parts.append(f"publicado-hace-menos-de-{n}-{suffix}")
 
     parts.append("orden-publicado-descendente")
     return f"{ZONAPROP_BASE}/{'-'.join(parts)}.html"
@@ -213,9 +230,7 @@ def _collect_ldjson_by_url(soup: BeautifulSoup) -> dict[str, dict[str, Any]]:
     return out
 
 
-def _ldjson_for_url(
-    ld_index: dict[str, dict[str, Any]], url: str
-) -> dict[str, Any] | None:
+def _ldjson_for_url(ld_index: dict[str, dict[str, Any]], url: str) -> dict[str, Any] | None:
     if url in ld_index:
         return ld_index[url]
     # Match by postingId suffix — listing URLs sometimes carry query strings.
@@ -344,11 +359,7 @@ def _derive_neighborhood(address: str | None) -> str | None:
             last_num_idx = i
     # If we found a digit-only token, everything after it is the neighborhood;
     # otherwise (no digit at all, e.g. "Las Cañitas, Palermo") use the whole head.
-    nb_tokens = (
-        tokens[last_num_idx + 1 :]
-        if 0 <= last_num_idx < len(tokens) - 1
-        else tokens
-    )
+    nb_tokens = tokens[last_num_idx + 1 :] if 0 <= last_num_idx < len(tokens) - 1 else tokens
     # Drop trailing/leading "al" filler.
     nb_tokens = [t for t in nb_tokens if t.lower() != "al"]
     return " ".join(nb_tokens) or None
@@ -385,18 +396,14 @@ def _parse_card_to_listing(
     # the amount.
     price: float | None = None
     currency = "ARS"
-    price_el = card.select_one(
-        '[data-qa="POSTING_CARD_PRICE"], .postingPrices-module__price'
-    )
+    price_el = card.select_one('[data-qa="POSTING_CARD_PRICE"], .postingPrices-module__price')
     if price_el is not None:
         price, currency = _parse_argentine_price(price_el.get_text(" ", strip=True))
 
     # --- features (m² / rooms / bathrooms) ---
     feat_text_parts = [
         span.get_text(" ", strip=True)
-        for span in card.select(
-            ".postingMainFeatures-module__posting-main-features-span"
-        )
+        for span in card.select(".postingMainFeatures-module__posting-main-features-span")
     ]
     feat_text = " ".join(feat_text_parts)
     area_m2 = _as_float(m.group(1)) if (m := _AREA_RE.search(feat_text)) else None
@@ -453,9 +460,7 @@ def _parse_card_to_listing(
         return None
 
 
-def parse_listings_from_ssr_html(
-    html: str, now: datetime | None = None
-) -> list[Listing]:
+def parse_listings_from_ssr_html(html: str, now: datetime | None = None) -> list[Listing]:
     """Extract listings from ZonaProp's server-rendered HTML.
 
     This is the path taken when we fetch with a link-preview UA

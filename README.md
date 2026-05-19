@@ -74,12 +74,15 @@ full schema. Highlights:
 | `TELEGRAM_CHAT_ID` | — | Single id or comma-separated list. |
 | `OPERATION_TYPE` | `alquiler` | `alquiler` (rent) or `venta` (sale). |
 | `PROPERTY_TYPES` | `departamentos` | CSV: `departamentos`, `ph`, `casas`. |
-| `NEIGHBORHOODS` | _empty_ | CSV of ZonaProp slugs, e.g. `palermo,belgrano`. |
+| `NEIGHBORHOODS` | _empty_ | Either a single city slug (`capital-federal`, `gran-buenos-aires`) or CSV of barrios (`palermo,belgrano`). |
 | `PRICE_MIN` / `PRICE_MAX` | `0` / `0` | Inclusive band. `0` disables. |
 | `CURRENCY` | `ARS` | `ARS` (pesos) or `USD` (dólares). |
 | `ROOMS_MIN` / `ROOMS_MAX` | `0` / `0` | Bedroom count. |
 | `AREA_MIN` | `0` | Minimum square metres. |
-| `CHECK_INTERVAL_MINUTES` | `15` | Scrape every N minutes. |
+| `PUBLISHED_WITHIN_DAYS` | `0` | Only listings posted in the last N days. `0` disables. |
+| `DAILY_CHECK_TIME` | _empty_ | `HH:MM` (24h). When set, scrape once per day at this time in `SCHEDULE_TIMEZONE`. Overrides `CHECK_INTERVAL_MINUTES`. |
+| `SCHEDULE_TIMEZONE` | `America/Argentina/Buenos_Aires` | IANA TZ for `DAILY_CHECK_TIME`. |
+| `CHECK_INTERVAL_MINUTES` | `15` | Scrape every N minutes. Ignored when `DAILY_CHECK_TIME` is set. |
 | `WATCHDOG_TIMEOUT_MINUTES` | `30` | Alert if no successful scrape for N minutes. `0` disables. |
 | `API_KEY` | — | Bearer token for `POST /api/check` and `PUT /api/filters`. |
 | `USE_PLAYWRIGHT` | `false` | Enable headless Chromium fallback. |

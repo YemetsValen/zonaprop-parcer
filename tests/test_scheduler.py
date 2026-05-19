@@ -6,12 +6,15 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import select
 
 from app.config import Settings
 from app.db.database import get_session
 from app.db.models import SeenListing
 from app.scheduler import (
+    _check_trigger,
     _passes_filters,
     check_new_listings,
     get_state,
@@ -66,6 +69,41 @@ def test_passes_filters_neighborhood() -> None:
     )
     assert _passes_filters(_make_listing(neighborhood="Palermo"), s)
     assert not _passes_filters(_make_listing(neighborhood="Recoleta"), s)
+
+
+def test_passes_filters_currency_mismatch_is_rejected() -> None:
+    """Comparing prices across currencies (ARS vs USD) would silently leak
+    bogus listings. Reject mismatched-currency listings outright."""
+    s = Settings(
+        telegram_bot_token="t",
+        telegram_chat_id="1",
+        currency="USD",
+        price_min=0,
+        price_max=90000,
+        neighborhoods="capital-federal",
+    )
+    # Listing in ARS, settings in USD -> rejected even though ARS price looks small.
+    assert not _passes_filters(_make_listing(price=50000, currency="ARS"), s)
+    assert _passes_filters(_make_listing(price=50000, currency="USD"), s)
+
+
+def test_passes_filters_city_level_skips_barrio_check() -> None:
+    """When ``neighborhoods=['capital-federal']`` is a city-level slug,
+    listings carry their barrio (Palermo, Belgrano, ...) so the naive
+    membership check would reject everything. The filter must skip the
+    barrio check in that case."""
+    s = Settings(
+        telegram_bot_token="t",
+        telegram_chat_id="1",
+        currency="USD",
+        price_min=0,
+        price_max=90000,
+        neighborhoods="capital-federal",
+    )
+    assert _passes_filters(_make_listing(price=80000, currency="USD", neighborhood="Palermo"), s)
+    assert _passes_filters(_make_listing(price=80000, currency="USD", neighborhood="Caballito"), s)
+    # Price still enforced locally:
+    assert not _passes_filters(_make_listing(price=120000, currency="USD"), s)
 
 
 @pytest.mark.asyncio
@@ -142,3 +180,31 @@ async def test_watchdog_silent_before_first_run(fresh_db) -> None:
     fake_notifier.send_text = AsyncMock()
     await watchdog_tick(notifier=fake_notifier)
     fake_notifier.send_text.assert_not_called()
+
+
+def test_check_trigger_defaults_to_interval() -> None:
+    """No ``daily_check_time`` -> classic interval-based trigger."""
+    s = Settings(
+        telegram_bot_token="t",
+        telegram_chat_id="1",
+        check_interval_minutes=15,
+    )
+    trigger = _check_trigger(s)
+    assert isinstance(trigger, IntervalTrigger)
+
+
+def test_check_trigger_uses_cron_when_daily_time_set() -> None:
+    """``daily_check_time`` switches the scheduler to a daily cron in the
+    configured timezone."""
+    s = Settings(
+        telegram_bot_token="t",
+        telegram_chat_id="1",
+        daily_check_time="07:00",
+        schedule_timezone="America/Argentina/Buenos_Aires",
+    )
+    trigger = _check_trigger(s)
+    assert isinstance(trigger, CronTrigger)
+    # CronTrigger stores fields in a list keyed by name; check hour/minute.
+    fields = {f.name: str(f) for f in trigger.fields}
+    assert fields["hour"] == "7"
+    assert fields["minute"] == "0"
