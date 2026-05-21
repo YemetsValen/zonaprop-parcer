@@ -87,6 +87,85 @@ def test_passes_filters_currency_mismatch_is_rejected() -> None:
     assert _passes_filters(_make_listing(price=50000, currency="USD"), s)
 
 
+def test_passes_filters_neighborhood_normalises_spaces_and_accents() -> None:
+    """ZonaProp surfaces neighborhoods as free-form labels with spaces and
+    accents ("Villa Crespo", "Núñez", "San Cristóbal"), but the configured
+    ``NEIGHBORHOODS`` CSV uses ZP's URL slugs (``villa-crespo``, ``nunez``,
+    ``san-cristobal``). The local barrio filter must compare them in a
+    slug-normalised form."""
+    s = Settings(
+        telegram_bot_token="t",
+        telegram_chat_id="1",
+        currency="USD",
+        price_min=0,
+        price_max=95000,
+        rooms_min=2,
+        rooms_max=2,
+        area_min=37,
+        neighborhoods="palermo,villa-crespo,nunez,san-cristobal",
+    )
+    base = {"price": 88000.0, "currency": "USD", "area_m2": 44.0, "rooms": 2}
+    assert _passes_filters(_make_listing(neighborhood="Villa Crespo", **base), s)
+    assert _passes_filters(_make_listing(neighborhood="Núñez", **base), s)
+    assert _passes_filters(_make_listing(neighborhood="San Cristóbal", **base), s)
+    # Listings outside the configured set are still dropped.
+    assert not _passes_filters(_make_listing(neighborhood="Caballito", **base), s)
+
+
+def test_passes_filters_neighborhood_matches_subbarrios() -> None:
+    """ZonaProp sometimes returns a child barrio name (``"Belgrano R"``,
+    ``"Belgrano C"``) for a listing whose parent slug (``belgrano``) is in
+    the configured CSV. We allow the listing through to avoid losing
+    coverage of the parent barrio."""
+    s = Settings(
+        telegram_bot_token="t",
+        telegram_chat_id="1",
+        currency="USD",
+        price_min=0,
+        price_max=95000,
+        rooms_min=2,
+        rooms_max=2,
+        area_min=37,
+        neighborhoods="belgrano",
+    )
+    base = {"price": 88000.0, "currency": "USD", "area_m2": 44.0, "rooms": 2}
+    assert _passes_filters(_make_listing(neighborhood="Belgrano", **base), s)
+    assert _passes_filters(_make_listing(neighborhood="Belgrano R", **base), s)
+    assert _passes_filters(_make_listing(neighborhood="Belgrano Chico", **base), s)
+
+
+def test_passes_filters_rejects_listings_with_no_price_when_band_configured() -> None:
+    """``emprendimiento`` (off-plan) rows often publish "Consultar" instead
+    of a numeric price. When the user has set a price band we cannot prove
+    the listing is in range, so we drop it rather than send a "USD ?"
+    surprise into Telegram."""
+    s = Settings(
+        telegram_bot_token="t",
+        telegram_chat_id="1",
+        currency="USD",
+        price_min=0,
+        price_max=95000,
+        neighborhoods="palermo",
+    )
+    # area / rooms are chosen so the listing only ever fails the price gate,
+    # never the area/rooms gates contributed by conftest defaults.
+    base = {"currency": "ARS", "area_m2": 80.0, "rooms": 2, "neighborhood": "Palermo"}
+    assert not _passes_filters(_make_listing(price=None, **base), s)
+    # No price band -> ``price=None`` is accepted (different behaviour).
+    s_no_band = Settings(
+        telegram_bot_token="t",
+        telegram_chat_id="1",
+        currency="USD",
+        price_min=0,
+        price_max=0,
+        rooms_min=0,
+        rooms_max=0,
+        area_min=0,
+        neighborhoods="palermo",
+    )
+    assert _passes_filters(_make_listing(price=None, **base), s_no_band)
+
+
 def test_passes_filters_city_level_skips_barrio_check() -> None:
     """When ``neighborhoods=['capital-federal']`` is a city-level slug,
     listings carry their barrio (Palermo, Belgrano, ...) so the naive

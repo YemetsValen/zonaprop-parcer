@@ -75,7 +75,7 @@ full schema. Highlights:
 | `OPERATION_TYPE` | `alquiler` | `alquiler` (rent) or `venta` (sale). |
 | `PROPERTY_TYPES` | `departamentos` | CSV: `departamentos`, `ph`, `casas`. |
 | `NEIGHBORHOODS` | _empty_ | Either a single city slug (`capital-federal`, `gran-buenos-aires`) or CSV of barrios (`palermo,belgrano`). |
-| `PRICE_MIN` / `PRICE_MAX` | `0` / `0` | Inclusive band. `0` disables. |
+| `PRICE_MIN` / `PRICE_MAX` | `0` / `0` | Inclusive band. `0` disables. When any neighborhood is configured the price slug is **omitted from the URL** (ZonaProp 301-strips the last neighborhood otherwise) and the band is enforced locally in a **currency-aware** way — listings whose `CURRENCY` differs from this setting are dropped outright. |
 | `CURRENCY` | `ARS` | `ARS` (pesos) or `USD` (dólares). |
 | `ROOMS_MIN` / `ROOMS_MAX` | `0` / `0` | Bedroom count. |
 | `AREA_MIN` | `0` | Minimum square metres. |

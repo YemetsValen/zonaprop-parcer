@@ -51,14 +51,20 @@ def test_build_search_url_basic() -> None:
     assert "2-3-ambientes" in url
     # Area.
     assert "mas-45-m2" in url
-    # Price range with currency suffix.
-    assert "300000-800000-pesos" in url
+    # Price slug is intentionally omitted whenever any neighborhood is
+    # configured: ZonaProp's URL handler 301-strips the last neighborhood
+    # when a price slug is present, so we keep the URL location-scoped and
+    # enforce the price band locally in ``_passes_filters``.
+    assert "300000-800000-pesos" not in url
+    assert "pesos" not in url
     # Sort order.
     assert url.endswith("orden-publicado-descendente.html")
 
 
 def test_build_search_url_usd_uses_dolares() -> None:
-    s = _make_settings(currency="USD")
+    # Price slug (and therefore the currency word) is only emitted when no
+    # neighborhood is configured (see ``test_build_search_url_price_dropped_when_neighborhoods``).
+    s = _make_settings(neighborhoods="", currency="USD")
     assert "dolares" in build_search_url(s)
 
 
@@ -99,16 +105,38 @@ def test_build_search_url_venta_capital_federal_24h() -> None:
     assert "90000" not in url
 
 
-def test_build_search_url_price_only_max_uses_zero_prefix() -> None:
-    """Only ``price_max`` set (no city) -> ``0-<max>-{money}``."""
+def test_build_search_url_price_only_max_no_neighborhoods() -> None:
+    """Only ``price_max`` set + no neighborhood -> ``0-<max>-{money}``.
+
+    When at least one neighborhood is configured the price slug is dropped
+    from the URL (see ``test_build_search_url_price_dropped_when_neighborhoods``)
+    because ZonaProp 301-strips the trailing neighborhood from the path
+    whenever a price slug is present.
+    """
     s = _make_settings(
-        neighborhoods="palermo",
+        neighborhoods="",
         currency="USD",
         price_min=0,
         price_max=150000,
     )
     url = build_search_url(s)
     assert "0-150000-dolares" in url
+
+
+def test_build_search_url_price_dropped_when_neighborhoods() -> None:
+    """With a neighborhood configured the price slug must be omitted, even
+    when ``price_max`` is set, to avoid the ZonaProp 301-strip bug."""
+    s = _make_settings(
+        neighborhoods="palermo,belgrano",
+        currency="USD",
+        price_min=0,
+        price_max=95000,
+    )
+    url = build_search_url(s)
+    assert "95000" not in url
+    assert "dolares" not in url
+    assert "palermo" in url
+    assert "belgrano" in url
 
 
 def test_build_search_url_published_within_days_plural() -> None:
