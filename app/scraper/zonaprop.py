@@ -147,12 +147,17 @@ def build_search_url(settings: Settings) -> str:
     if settings.area_min:
         parts.append(f"mas-{settings.area_min}-m2")
 
-    # ZonaProp silently drops the city/region slug from the URL when the price
-    # range is restrictive enough (e.g. ``capital-federal`` + ``≤ 90 000 USD``
-    # redirects to the global ``departamentos-venta-0-90000-dolar`` page). To
-    # avoid losing the location filter we keep the URL location-scoped and
-    # enforce the price range in ``app.scheduler._passes_filters`` instead.
-    if not settings.has_city_level_location:
+    # ZonaProp's URL handler silently drops the LAST neighborhood from the
+    # path whenever a price slug is also present — verified empirically with
+    # 1, 2, ..., 9 neighborhoods + ``2-ambientes`` + ``mas-37-m2`` +
+    # ``publicado-hace-menos-de-1-dia`` + a price range; in every case the
+    # response is a 301 to the same URL with the trailing neighborhood
+    # removed. For city-level slugs (``capital-federal``) the entire
+    # location is wiped and the user is dumped on the global results page.
+    # The only safe option is to omit the price slug from the URL whenever
+    # any location is configured and to enforce the price band locally in
+    # ``app.scheduler._passes_filters`` (which is currency-aware).
+    if not settings.neighborhoods:
         if settings.price_min and settings.price_max:
             money = "pesos" if settings.currency == Currency.ARS else "dolares"
             parts.append(f"{settings.price_min}-{settings.price_max}-{money}")

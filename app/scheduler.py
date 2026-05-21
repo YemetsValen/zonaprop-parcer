@@ -13,6 +13,7 @@ One :class:`AsyncIOScheduler` instance owned by the FastAPI app. Jobs:
 from __future__ import annotations
 
 import logging
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
@@ -79,6 +80,18 @@ def get_state() -> SchedulerState:
 # --- core job ---------------------------------------------------------------
 
 
+def _slugify_for_compare(value: str) -> str:
+    """Normalise a free-form barrio name (``"Villa Crespo"``, ``"Núñez"``,
+    ``"Belgrano R"``) into a ZonaProp-style slug (``villa-crespo``,
+    ``nunez``, ``belgrano-r``) so the local filter can match listings
+    against the configured CSV of slugs."""
+    # Strip accents — Spanish neighborhoods commonly include them while ZP
+    # slugs don't ("Nuñez" -> "nunez", "San Cristóbal" -> "san-cristobal").
+    decomposed = unicodedata.normalize("NFD", value)
+    ascii_only = "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
+    return ascii_only.lower().strip().replace(" ", "-")
+
+
 def _passes_filters(listing: Listing, settings: Settings) -> bool:
     """ZonaProp's URL filters do most of the work, but the response often
     contains nearby / similar postings — re-check key constraints here so
@@ -87,8 +100,15 @@ def _passes_filters(listing: Listing, settings: Settings) -> bool:
     # ARS / USD would silently let through a 750 000 ARS listing under a
     # 90 000 USD ceiling (or block a 90 000 USD listing under an 800 000 ARS
     # ceiling). When the listing currency differs from the configured one we
-    # drop the listing rather than guess at an FX rate.
-    if listing.price is not None and listing.currency != settings.currency.value:
+    # drop the listing rather than guess at an FX rate. Same logic when a
+    # price band is configured but the listing has no parsed price (e.g.
+    # ``emprendimiento`` rows that publish "Consultar"): we can't prove the
+    # listing is in-range, so drop it.
+    price_band_configured = bool(settings.price_min or settings.price_max)
+    if listing.price is None:
+        if price_band_configured:
+            return False
+    elif listing.currency != settings.currency.value:
         return False
     if settings.price_max and listing.price and listing.price > settings.price_max:
         return False
@@ -106,11 +126,19 @@ def _passes_filters(listing: Listing, settings: Settings) -> bool:
     # slug, so a naive ``in`` check would reject everything.
     if settings.has_city_level_location:
         return True
-    return not (
-        settings.neighborhoods
-        and listing.neighborhood
-        and listing.neighborhood.lower() not in settings.neighborhoods
-    )
+    if settings.neighborhoods and listing.neighborhood:
+        # ZP serves barrio names with spaces, capitalisation and accents
+        # ("Villa Crespo", "Núñez", "Belgrano R"); the configured neighborhoods
+        # are URL slugs ("villa-crespo", "nunez", "belgrano-r"). Slugify both
+        # sides before comparing, and allow listings whose barrio _starts with_
+        # one of the configured slugs so "Belgrano R" still matches "belgrano"
+        # when the user only configured the parent barrio.
+        listing_slug = _slugify_for_compare(listing.neighborhood)
+        for nb_slug in settings.neighborhoods:
+            if listing_slug == nb_slug or listing_slug.startswith(nb_slug + "-"):
+                return True
+        return False
+    return True
 
 
 async def check_new_listings(
