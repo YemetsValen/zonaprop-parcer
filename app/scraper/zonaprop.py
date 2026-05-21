@@ -43,6 +43,11 @@ log = logging.getLogger(__name__)
 
 ZONAPROP_BASE = "https://www.zonaprop.com.ar"
 
+# ZonaProp's ``publicado-hace-menos-de-N-dia(s)`` URL slug only resolves
+# for N ∈ {1, …, 6}; any larger value 301-redirects to the URL with no
+# recency filter at all, silently broadening the search.
+ZONAPROP_MAX_RECENCY_DAYS = 6
+
 # Cloudflare on www.zonaprop.com.ar runs Managed Challenge against datacenter
 # IPs / generic browser UAs, but explicitly whitelists link-preview crawlers
 # (WhatsApp, etc.) so their server-side rendered metadata is reachable. We use
@@ -167,13 +172,26 @@ def build_search_url(settings: Settings) -> str:
             money = "pesos" if settings.currency == Currency.ARS else "dolares"
             parts.append(f"0-{settings.price_max}-{money}")
 
+    # ZonaProp's ``publicado-hace-menos-de-N-dias`` slug only supports
+    # N ∈ {1, …, 6}. Anything 7+ is silently 301-stripped to the URL with
+    # no recency filter at all — which leaves the page sorted by
+    # ``publicado-descendente`` (newest first) on the first page, hiding
+    # cheap listings several pages back. When the user asks for a longer
+    # window we therefore:
+    #   * skip the (broken) slug, and
+    #   * switch sort to ``precio-ascendente`` so the cheapest matches
+    #     surface on page 1 — much more useful for "find me apartments
+    #     under USD X" use cases than the default newest-first sort.
+    sort_slug = "orden-publicado-descendente"
     if settings.published_within_days:
         n = settings.published_within_days
-        # Singular for 1, plural for 2+ — ZonaProp serves both forms.
-        suffix = "dia" if n == 1 else "dias"
-        parts.append(f"publicado-hace-menos-de-{n}-{suffix}")
+        if 1 <= n <= ZONAPROP_MAX_RECENCY_DAYS:
+            suffix = "dia" if n == 1 else "dias"
+            parts.append(f"publicado-hace-menos-de-{n}-{suffix}")
+        else:
+            sort_slug = "orden-precio-ascendente"
 
-    parts.append("orden-publicado-descendente")
+    parts.append(sort_slug)
     return f"{ZONAPROP_BASE}/{'-'.join(parts)}.html"
 
 

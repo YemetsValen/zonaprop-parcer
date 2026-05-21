@@ -185,6 +185,124 @@ def test_passes_filters_city_level_skips_barrio_check() -> None:
     assert not _passes_filters(_make_listing(price=120000, currency="USD"), s)
 
 
+def test_passes_filters_rejects_off_plan_listings() -> None:
+    """Off-plan / ``emprendimiento`` postings publish a misleadingly low
+    headline price (down-payment, "desde X", per-unit starting price)
+    while the actual total is buried in the description. Drop anything
+    that looks like an off-plan project so the digest stays focused on
+    real second-hand units users can actually buy."""
+    s = Settings(
+        telegram_bot_token="t",
+        telegram_chat_id="1",
+        currency="USD",
+        price_min=0,
+        price_max=95000,
+        rooms_min=2,
+        rooms_max=2,
+        area_min=37,
+        neighborhoods="palermo,villa-crespo",
+    )
+    in_band: dict[str, object] = {
+        "price": 60000.0,
+        "currency": "USD",
+        "area_m2": 50.0,
+        "rooms": 2,
+        "neighborhood": "Palermo",
+    }
+    # Real second-hand 2-amb at the same price passes.
+    assert _passes_filters(_make_listing(title="Hermoso 2 amb en Palermo", **in_band), s)
+    # All known off-plan terms should drop the listing.
+    for marker in (
+        "Maker Belgrano – Entrega estimada: 2º trimestre 2027",
+        "Mood Humboldt — preventa de unidades",
+        "Edificio en pozo, financiación 60 meses",
+        "Emprendimiento de categoría",
+        "Edificio en construcción, entrega 2026",
+    ):
+        assert not _passes_filters(_make_listing(title=marker, **in_band), s), marker
+    # Title is the primary signal but the keyword can also appear in
+    # ZonaProp's free-form neighborhood field (e.g. "11° Villa Crespo
+    # Emprendimiento"); accept either source.
+    assert not _passes_filters(
+        _make_listing(
+            title="2 amb",
+            address="Av. Corrientes 1234 — Emprendimiento Vibe",
+            **{k: v for k, v in in_band.items() if k != "neighborhood"},
+            neighborhood="Palermo",
+        ),
+        s,
+    )
+
+
+def test_passes_filters_rejects_implausible_price_per_m2() -> None:
+    """Off-plan posts with generic titles publish the down-payment as the
+    headline price (USD 1 700 for a 70 m² unit whose real total sits in
+    the description). The keyword filter can't see those, but the price-
+    per-m² ratio is unmistakably absurd (≈ USD 24/m² vs. USD 800-1000/m²
+    floor for the cheapest CABA barrios). Reject anything below the
+    sanity floor."""
+    s = Settings(
+        telegram_bot_token="t",
+        telegram_chat_id="1",
+        currency="USD",
+        price_min=0,
+        price_max=95000,
+        rooms_min=2,
+        rooms_max=2,
+        area_min=37,
+        neighborhoods="palermo,villa-crespo",
+    )
+    # USD 1 700 / 70 m² ≈ 24 USD/m² — way below the 500 USD/m² floor.
+    assert not _passes_filters(
+        _make_listing(
+            title="Edificio de categoría, excelente ubicación",
+            price=1700.0,
+            currency="USD",
+            area_m2=70.0,
+            rooms=2,
+            neighborhood="Palermo",
+        ),
+        s,
+    )
+    # USD 11 110 / 62 m² ≈ 179 USD/m² — still off-plan headline.
+    assert not _passes_filters(
+        _make_listing(
+            title="Maker Belgrano",
+            price=11110.0,
+            currency="USD",
+            area_m2=62.0,
+            rooms=2,
+            neighborhood="Palermo",
+        ),
+        s,
+    )
+    # USD 50 000 / 45 m² ≈ 1 111 USD/m² — legitimate cheap second-hand.
+    assert _passes_filters(
+        _make_listing(
+            title="2 amb Villa Crespo",
+            price=50000.0,
+            currency="USD",
+            area_m2=45.0,
+            rooms=2,
+            neighborhood="Villa Crespo",
+        ),
+        s,
+    )
+    # The floor only applies when we have both price and area in USD —
+    # missing-area listings shouldn't be falsely accused.
+    assert _passes_filters(
+        _make_listing(
+            title="2 amb Palermo",
+            price=60000.0,
+            currency="USD",
+            area_m2=None,
+            rooms=2,
+            neighborhood="Palermo",
+        ),
+        s,
+    )
+
+
 @pytest.mark.asyncio
 async def test_check_new_listings_dedupes_against_db(monkeypatch, fresh_db) -> None:
     listing_a = _make_listing(id="a", neighborhood="Palermo", price=500000, rooms=2, area_m2=55)
