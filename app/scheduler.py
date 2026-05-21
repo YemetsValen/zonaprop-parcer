@@ -80,6 +80,53 @@ def get_state() -> SchedulerState:
 # --- core job ---------------------------------------------------------------
 
 
+# Off-plan ("emprendimiento" / "pozo" / "preventa") listings publish a
+# misleadingly low headline price — typically a down-payment or "from"
+# figure — while the actual total price is hidden in the body text (e.g.
+# "Precio total de la unidad: usd 151. 000"). Our parser only sees the
+# headline, so these rows show up as fake-cheap (USD 1 700, 11 110,
+# 22 222) and pollute the "≤ X" digest. Detect them by keywords in the
+# title / address and drop outright. Real second-hand units don't use
+# these terms.
+_OFF_PLAN_KEYWORDS = (
+    "entrega estimada",
+    "preventa",
+    "pre-venta",
+    "pre venta",
+    "pozo",
+    "emprendimiento",
+    "en construcción",
+    "en construccion",
+)
+
+
+def _looks_like_off_plan(listing: Listing) -> bool:
+    haystack = " ".join(
+        s.lower() for s in (listing.title, listing.address, listing.neighborhood) if s
+    )
+    return any(k in haystack for k in _OFF_PLAN_KEYWORDS)
+
+
+# Even with the keyword filter above some off-plan posts slip through —
+# their title is generic ("Edificio de categoría, excelente ubicación")
+# and the "Entrega estimada …" text only lives in the description, which
+# we don't parse. The unmistakable tell is an absurdly low price-per-m²:
+# real CABA second-hand apartments bottom out around USD 800-1000/m² in
+# the cheapest barrios (Chacarita, Villa Santa Rita); anything an order
+# of magnitude below that (USD 1 700 / 70 m² ≈ USD 24/m²) is the down-
+# payment / "desde X" headline price of an off-plan unit whose real
+# total is buried in the description. Drop anything below USD 500/m² as
+# a safety floor — well under the legitimate market range so we won't
+# drop real bargains.
+MIN_REASONABLE_USD_PER_M2 = 500.0
+
+
+def _has_implausible_price_per_m2(listing: Listing) -> bool:
+    if listing.currency != "USD" or not listing.price or not listing.area_m2:
+        return False
+    return (listing.price / listing.area_m2) < MIN_REASONABLE_USD_PER_M2
+
+
 def _slugify_for_compare(value: str) -> str:
     """Normalise a free-form barrio name (``"Villa Crespo"``, ``"Núñez"``,
     ``"Belgrano R"``) into a ZonaProp-style slug (``villa-crespo``,
@@ -96,6 +143,14 @@ def _passes_filters(listing: Listing, settings: Settings) -> bool:
     """ZonaProp's URL filters do most of the work, but the response often
     contains nearby / similar postings — re-check key constraints here so
     only matches reach Telegram."""
+    # Off-plan / pre-construction listings have a misleadingly low headline
+    # price — drop them so the digest doesn't fill up with USD 1 700 fake
+    # rows whose real price is buried in the description. We check both
+    # title/address keywords and an absurdly-low price-per-m² floor
+    # (covers off-plan posts with generic titles where the giveaway only
+    # appears in the unparsed description).
+    if _looks_like_off_plan(listing) or _has_implausible_price_per_m2(listing):
+        return False
     # Price comparison only makes sense within the same currency — mixing
     # ARS / USD would silently let through a 750 000 ARS listing under a
     # 90 000 USD ceiling (or block a 90 000 USD listing under an 800 000 ARS

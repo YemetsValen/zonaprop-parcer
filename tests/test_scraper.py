@@ -140,8 +140,8 @@ def test_build_search_url_price_dropped_when_neighborhoods() -> None:
 
 
 def test_build_search_url_published_within_days_plural() -> None:
-    s = _make_settings(neighborhoods="palermo", published_within_days=7)
-    assert "publicado-hace-menos-de-7-dias" in build_search_url(s)
+    s = _make_settings(neighborhoods="palermo", published_within_days=3)
+    assert "publicado-hace-menos-de-3-dias" in build_search_url(s)
 
 
 def test_build_search_url_published_within_days_singular() -> None:
@@ -149,6 +149,33 @@ def test_build_search_url_published_within_days_singular() -> None:
     assert "publicado-hace-menos-de-1-dia" in build_search_url(s)
     # And NOT the plural form.
     assert "publicado-hace-menos-de-1-dias" not in build_search_url(s)
+
+
+def test_build_search_url_long_recency_drops_slug_and_sorts_by_price_asc() -> None:
+    """ZonaProp's ``publicado-hace-menos-de-N-dias`` slug only resolves for
+    N ∈ {1, …, 6}; anything 7+ is silently 301-stripped. When we can't
+    express the recency window in the URL we omit the slug entirely and
+    switch sort from newest-first to price-ascending so the cheapest
+    matches surface on page 1 (which is what users searching by price
+    cap actually want)."""
+    s = _make_settings(neighborhoods="palermo", published_within_days=30)
+    url = build_search_url(s)
+    # Recency slug dropped — would 301-strip server-side anyway.
+    assert "publicado-hace-menos-de" not in url
+    # Sort flipped to ``precio-ascendente`` so cheap listings reach page 1.
+    assert url.endswith("orden-precio-ascendente.html")
+    assert "orden-publicado-descendente" not in url
+
+
+def test_build_search_url_recency_within_supported_range_keeps_default_sort() -> None:
+    """For supported recency windows (1-6 days) we keep the URL slug AND
+    the default ``publicado-descendente`` sort — there's no need to flip
+    to price-asc because the page is already small enough that all matches
+    appear on page 1."""
+    for n in (1, 2, 3, 4, 5, 6):
+        url = build_search_url(_make_settings(neighborhoods="palermo", published_within_days=n))
+        assert f"publicado-hace-menos-de-{n}-" in url
+        assert url.endswith("orden-publicado-descendente.html")
 
 
 def test_extract_next_data_handles_minified_html(sample_html: str) -> None:
